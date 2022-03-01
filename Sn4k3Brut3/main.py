@@ -3,10 +3,10 @@ import requests
 from colorama import *
 import argparse
 import datetime
+import threading
 import requests
-import sys
 import urllib3
-import os
+import time
 urllib3.disable_warnings()
 init(autoreset=True)
 
@@ -18,14 +18,19 @@ parser.add_argument('-u','--url', help='Your url', required=False)
 parser.add_argument('-w','--wordlist', help='Your wordlist', required=False)
 parser.add_argument('-v','--verbosity', help='Verbosity [y/n]', required=False)
 parser.add_argument('-i','--interactive', help='Interactive mode [y/n]', required=True)
+parser.add_argument('-rcs','--recursive', help='Recursive mode [y/n]', required=False)
 parser.add_argument('-rs','--responsesize', help='Filter by response size', required=False)
 parser.add_argument('-rw','--responsewords', help='Filter by response word counter', required=False)
-parser.add_argument('-th','--threads', help='Number of threads', required=True)
+parser.add_argument('-rc','--responsecode', help='Filter by response status code', required=False)
+parser.add_argument('-log','--logfile', help='Log file', required=False)
+parser.add_argument('-tm','--timeout', help='Requests timeout (seconds)', required=False)
+parser.add_argument('-th','--threads', help='Number of threads', required=False)
 args = vars(parser.parse_args())
+
 
 class snakebrute:
     def listFD(self, url):
-        page = requests.get(url).text
+        page = requests.get(url, verify=False, timeout=int(args['timeout'])).text
         soup = BeautifulSoup(page, 'html.parser')
         return [node.get('href') for node in soup.find_all('a') if node.get('href')]
 
@@ -43,8 +48,15 @@ class snakebrute:
 {Style.BRIGHT}{Fore.RED}VERBOSITY {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['verbosity'].upper()}'
 {Style.BRIGHT}{Fore.RED}FILTERSIZE {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['responsesize'].upper()}'
 {Style.BRIGHT}{Fore.RED}FILTERWORDS {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['responsewords'].upper()}'
+{Style.BRIGHT}{Fore.RED}FILTERCODE {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['responsecode'].upper()}'
+{Style.BRIGHT}{Fore.RED}INTERACTIVE {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['interactive'].upper()}'
+{Style.BRIGHT}{Fore.RED}RECURSIVE {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['recursive'].upper()}'
 {Style.BRIGHT}{Fore.RED}THREADS {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['threads'].upper()}'
+{Style.BRIGHT}{Fore.RED}TIMEOUT {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['timeout'].upper()}'
+{Style.BRIGHT}{Fore.RED}LOGFILE {Fore.WHITE}-> {Style.RESET_ALL}{Fore.BLUE}'{args['logfile']}'
 """)
+        wrdlist = str(args['wordlist'])
+        url = args['url']
         if args['verbosity'] == None or args['wordlist'] == None or args['url'] == None:
             snakebrute.printinfo("Missing some required arguments, quitting")
             exit()
@@ -55,39 +67,88 @@ class snakebrute:
                     line = line.strip()
                     snakebrute.getrequest(url+"/"+line)
             else:
-                snakebrute.printinfo("Single threading is disabled. Please wait while i load the wordlist")
-                try:
-                    os.remove("temp")
-                except:
-                    pass
-                try:
-                    os.mkdir("temp")
-                except FileExistsError:
-                    pass
-                    
+                threadsnumber = int(args['threads'])
+                linenumber = 0
+                for x in open(wrdlist,'r').readlines():
+                    linenumber += 1
+                linesperthread = int(linenumber/threadsnumber)
+                snakebrute.printverboseinfo(f"Starting in 3 seconds with {str(threadsnumber)} threads of {str(linesperthread)} lines each", vanish=False)
+                time.sleep(3)
+                fp = open(wrdlist)
+                linecounter = 0
+                for i, line in enumerate(fp):
+                    line = line.strip()
+                    linecounter += 1
+                    if linecounter > linesperthread:
+                        linecounter = 0
+                    else:
+                        threading.Thread(target=snakebrute.getrequest, args=(url+"/"+line,)).start()
+                fp.close()
+                
 
     def getrequest(self, completeurl):
-        if args['verbosity'].lower() == "y":
-            snakebrute.printverboseinfo(f"Trying to get {completeurl}")
-        r = requests.get(completeurl, verify=False)
-        if r.status_code != 404:
-            snakebrute.printinfo(f"{completeurl} : status code {str(r.status_code)}")
+        snakebrute.printverboseinfo(f"Trying to get {completeurl}", vanish=True)
+        try:
+            r = requests.get(completeurl, verify=False, timeout=int(args['timeout']))
+            responsesize = str(len(r.content))
+            numberofwords = str(len(r.text.split(" ")))
+            if r.status_code != 404:
+               
+               sizecolor = Fore.WHITE
+               wordcolor = Fore.WHITE
+               codecolor = Fore.WHITE
 
-    def printverboseinfo(self, text):
-        sys.stdout.write("\033[K")
-        print(f"{Style.BRIGHT}{Fore.BLUE}[{Style.RESET_ALL}{Fore.WHITE}VERBOSE-{str(datetime.datetime.now().minute)}:{str(datetime.datetime.now().second)}{Style.BRIGHT}{Fore.BLUE}]{Style.BRIGHT}{Fore.WHITE} {text}")
-        sys.stdout.write("\033[F")
-        
+               if args['responsesize'] != 'n':
+                   if args['responsesize'] == responsesize:
+                       sizecolor = Fore.RED
+                
+               if args['responsewords'] != 'n':
+                   if args['responsewords'] == numberofwords:
+                       wordcolor = Fore.RED
+
+               if args['responsecode'] != 'n':
+                   if args['responsecode'] == str(r.status_code):
+                       codecolor = Fore.RED
+
+               snakebrute.printinfo(f"{completeurl} : status code {codecolor}{str(r.status_code)}{Fore.WHITE} : size {sizecolor}{responsesize}{Fore.WHITE} : words {wordcolor}{numberofwords}{Fore.WHITE}")
+               if args['recursive'].lower() == "y":
+                   threading.Thread(target=snakebrute.directorylisting, args=(completeurl,)).start()
+        except:
+            pass
+    
+    def printverboseinfo(self, text, vanish):
+        if args['verbosity'].lower() == "y":
+            if vanish == True:
+                print(f"\n{Style.BRIGHT}{Fore.BLUE}[{Style.RESET_ALL}{Fore.RED}VERBOSE-{str(datetime.datetime.now().minute)}:{str(datetime.datetime.now().second)}{Style.BRIGHT}{Fore.BLUE}]{Style.BRIGHT}{Fore.WHITE} {text}", end='\r\x1b[2K')
+            else:
+                print(f"{Style.BRIGHT}{Fore.BLUE}[{Style.RESET_ALL}{Fore.WHITE}VERBOSE-{str(datetime.datetime.now().minute)}:{str(datetime.datetime.now().second)}{Style.BRIGHT}{Fore.BLUE}]{Style.BRIGHT}{Fore.WHITE} {text}")
+            
     def printinfo(self, text):
-        print(f"{Style.BRIGHT}{Fore.BLUE}[{Style.RESET_ALL}{Fore.WHITE}INFO-{str(datetime.datetime.now().minute)}:{str(datetime.datetime.now().second)}{Style.BRIGHT}{Fore.BLUE}]{Style.BRIGHT}{Fore.WHITE} {text}")
+        content = f"{Style.BRIGHT}{Fore.BLUE}[{Style.RESET_ALL}{Fore.WHITE}INFO-{str(datetime.datetime.now().minute)}:{str(datetime.datetime.now().second)}{Style.BRIGHT}{Fore.BLUE}]{Style.BRIGHT}{Fore.WHITE} {text}"
+        if args['logfile'] != 'N':
+            f = open(args['logfile'], 'a')
+            f.write(content+"\n")
+            f.close()
+        print(content)
 
     def custominput(self, text):
         return input(f"{Style.BRIGHT}{Fore.RED}[{Style.RESET_ALL}{Fore.WHITE}INPUT{Style.BRIGHT}{Fore.RED}]{Style.BRIGHT}{Fore.BLUE} {text}: ")
         
-    def directorylisting(self):
-        for file in snakebrute.listFD(url):
+    def directorylisting(self, url):
+        filescounter = 0
+        filelist = snakebrute.listFD(url)
+        for file in filelist:
             if "/" in file or "." in file:
-                print(file)
+                filescounter += 1
+        if filescounter != 0:
+            print("\n")
+            for file in filelist:
+                if "/" in file or "." in file:
+                    snakebrute.printinfo(f"{Style.BRIGHT}{Fore.RED}{url} {Style.RESET_ALL}{Fore.WHITE}directory index : {Style.BRIGHT}{Fore.BLUE}{file}")
+                    if file.endswith("/") and file != "/":
+                        completeurl = url+"/"+file
+                        #print(completeurl)
+                        threading.Thread(target=snakebrute.directorylisting, args=(completeurl,)).start()
 
     def main(self, mode):
         if mode == "interactive":
@@ -95,6 +156,12 @@ class snakebrute:
             args['url'] = snakebrute.custominput("Insert url")
             args['wordlist'] = snakebrute.custominput("Insert wordlist path")
             args['verbosity'] = snakebrute.custominput("Insert verbosity [y/n]")
+            args['recursive'] = snakebrute.custominput("Insert recursive [y/n]")
+            args['responsesize'] = snakebrute.custominput("Insert filter size")
+            args['responsewords'] = snakebrute.custominput("Insert response words")
+            args['logfile'] = snakebrute.custominput("Insert log file")
+            args['threads'] = snakebrute.custominput("Insert threads")
+            args['timeout'] = snakebrute.custominput("Insert timeout")
         if args['verbosity'].lower() != "y":
             args['verbosity'] = "n"
 
@@ -102,12 +169,7 @@ class snakebrute:
 
 
 snakebrute = snakebrute()
-interactive = "n"
-try:
-    if args['interactive'].lower() == "y":
-        interactive = "y"
-except:
-    pass
+interactive = args['interactive'].lower()
 if interactive == "n":
     url = args['url']
     wordlist = args['wordlist']
@@ -137,6 +199,16 @@ if interactive == "n":
             responsewords = "y"
     except:
         pass
+    if args['timeout'] == None:
+        args['timeout'] = "10"
+    if args['responsecode'] == None:
+        args['responsecode'] = "n"
+    if args['recursive'] == None:
+        args['recursive'] = 'n'
+    if args['logfile'] == None:
+        args['logfile'] = 'N'
+    if args['threads'] == None:
+        args['threads'] = '1'
     snakebrute.main("non-interactive")
 else:
     snakebrute.main("interactive")
